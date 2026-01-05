@@ -16,21 +16,20 @@ const Products = () => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      // Fetch Products with timeout
+      // Increased timeout to handle slower initial queries after auth
       const { data: productsData, error: prodErr } = await withTimeout(
         supabase
           .from('products')
           .select('*')
           .order('created_at', { ascending: false }),
-        6000
+        20000
       ) as any;
       
       if (prodErr) throw prodErr;
       
-      // Fetch Categories with timeout
       const { data: catData } = await withTimeout(
         supabase.from('categories').select('*'),
-        4000
+        15000
       ) as any;
       
       setProducts(productsData || []);

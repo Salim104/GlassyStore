@@ -4,6 +4,13 @@ import { Profile } from '../types';
 import { supabase, isSupabaseConfigured, withTimeout } from './supabase';
 import { mockUsers } from './mockData';
 
+export interface ToastMessage {
+  id: string;
+  type: 'success' | 'error' | 'info';
+  title: string;
+  message: string;
+}
+
 interface AuthState {
   user: Profile | null;
   isAuthenticated: boolean;
@@ -21,9 +28,14 @@ interface UIState {
   drawerType: 'add' | 'edit' | null;
   drawerData: any | null;
   refreshTrigger: number;
+  commandPaletteOpen: boolean;
+  toasts: ToastMessage[];
   openDrawer: (type: 'add' | 'edit', data?: any) => void;
   closeDrawer: () => void;
   triggerRefresh: () => void;
+  setCommandPalette: (open: boolean) => void;
+  addToast: (type: ToastMessage['type'], title: string, message: string) => void;
+  removeToast: (id: string) => void;
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
@@ -45,11 +57,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         if (error) throw error;
       }
       
-      // Update local state
       set({ user: { ...currentUser, ...updates } });
       return { error: null };
     } catch (err: any) {
-      console.error("Profile update error:", err);
       return { error: err };
     }
   },
@@ -59,9 +69,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const { data, error } = await withTimeout(supabase.auth.signUp({
         email,
         password,
-        options: {
-          data: { name }
-        }
+        options: { data: { name } }
       })) as any;
       
       if (error) return { error };
@@ -79,68 +87,31 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         return { error: null };
       }
 
-      console.log("Attempting login for:", email);
       const { data, error } = await withTimeout(supabase.auth.signInWithPassword({ email, password }), 8000) as any;
-      
-      if (error) {
-        console.error("Supabase Auth Error:", error.message, error.status);
-        return { error: { message: error.message || "Login failed. Check credentials or project status." } };
-      }
+      if (error) return { error: { message: error.message } };
 
-      if (!data.user) return { error: { message: "User session could not be established." } };
+      const { data: profile } = await supabase.from('profiles').select('*').eq('id', data.user.id).single();
 
-      try {
-        const { data: profile, error: profileError } = await withTimeout(
-          supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', data.user.id)
-            .single(),
-          4000
-        ) as any;
-
-        if (profileError || !profile) {
-          console.warn("Profile fetch failed, defaulting to session metadata");
-          throw new Error("No profile found");
+      set({
+        isAuthenticated: true,
+        user: profile ? { ...profile } : {
+          id: data.user.id,
+          name: data.user.user_metadata?.name || 'User',
+          email: data.user.email || '',
+          role: 'user',
+          avatar_url: `https://i.pravatar.cc/150?u=${data.user.id}`
         }
-
-        set({
-          isAuthenticated: true,
-          user: {
-            id: profile.id,
-            name: profile.name || 'Admin User',
-            email: profile.email,
-            role: profile.role || 'user',
-            avatar_url: profile.avatar_url || `https://i.pravatar.cc/150?u=${profile.id}`
-          }
-        });
-      } catch (pErr) {
-        set({
-          isAuthenticated: true,
-          user: {
-            id: data.user.id,
-            name: data.user.user_metadata?.name || data.user.email?.split('@')[0] || 'User',
-            email: data.user.email || '',
-            role: 'user',
-            avatar_url: `https://i.pravatar.cc/150?u=${data.user.id}`
-          }
-        });
-      }
+      });
       
       return { error: null };
     } catch (err: any) {
-      console.error("Login critical catch:", err);
-      return { error: { message: err.message || "Connection timed out. The database might be offline." } };
+      return { error: { message: err.message || "Connection timed out." } };
     }
   },
   
   logout: async () => {
     try {
-      if (isSupabaseConfigured()) {
-        await supabase.auth.signOut();
-      }
-    } catch (err) {
-      console.error("Logout error:", err);
+      if (isSupabaseConfigured()) await supabase.auth.signOut();
     } finally {
       set({ user: null, isAuthenticated: false });
     }
@@ -154,7 +125,24 @@ export const useUIStore = create<UIState>((set) => ({
   drawerType: null,
   drawerData: null,
   refreshTrigger: 0,
+  commandPaletteOpen: false,
+  toasts: [],
+  
   openDrawer: (type, data = null) => set({ isDrawerOpen: true, drawerType: type, drawerData: data }),
   closeDrawer: () => set({ isDrawerOpen: false, drawerType: null, drawerData: null }),
   triggerRefresh: () => set((state) => ({ refreshTrigger: state.refreshTrigger + 1 })),
+  setCommandPalette: (open) => set({ commandPaletteOpen: open }),
+  
+  addToast: (type, title, message) => {
+    const id = Math.random().toString(36).substr(2, 9);
+    set((state) => ({
+      toasts: [...state.toasts, { id, type, title, message }]
+    }));
+    setTimeout(() => {
+      set((state) => ({ toasts: state.toasts.filter(t => t.id !== id) }));
+    }, 5000);
+  },
+  removeToast: (id) => set((state) => ({
+    toasts: state.toasts.filter(t => t.id !== id)
+  })),
 }));

@@ -1,0 +1,7 @@
+{
+  "name": "Copy of GlassyStore Admin",
+  "description": "A high-performance, glassmorphic eCommerce admin dashboard featuring real-time metrics, AI insights powered by Gemini, and seamless product management.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

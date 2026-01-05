@@ -9,18 +9,21 @@ import {
   RefreshCw,
   Bell,
   TrendingUp,
-  LayoutDashboard
+  LayoutDashboard,
+  AlertCircle,
+  Loader2
 } from 'lucide-react';
 import { MetricsCard } from '../components/MetricsCard';
 import { RevenueChart, SalesDistribution } from '../components/DashboardCharts';
 import { getStoreInsights } from '../lib/geminiService';
 import { OrderStatus, Order } from '../types';
-import { supabase } from '../lib/supabase';
+import { supabase, withTimeout } from '../lib/supabase';
 
 const Dashboard = () => {
   const [insights, setInsights] = useState<string | null>(null);
   const [loadingInsights, setLoadingInsights] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState({
     revenue: 0,
     orders: 0,
@@ -31,49 +34,41 @@ const Dashboard = () => {
 
   const fetchDashboardData = async () => {
     setLoading(true);
+    setError(null);
     try {
-      // 1. Fetch Revenue & Orders
-      const { data: ordersData, error: ordersErr } = await supabase.from('orders').select('total, status');
-      if (ordersErr) throw ordersErr;
+      const results = await withTimeout(Promise.all([
+        supabase.from('orders').select('total, status'),
+        supabase.from('profiles').select('*', { count: 'exact', head: true }),
+        supabase.from('products').select('*', { count: 'exact', head: true }),
+        supabase.from('orders').select('*').order('created_at', { ascending: false }).limit(5)
+      ]), 6000);
 
-      const totalRevenue = ordersData?.reduce((acc, curr) => acc + (Number(curr.total) || 0), 0) || 0;
-      const totalOrders = ordersData?.length || 0;
+      const [ordersRes, usersRes, prodsRes, recentRes] = results;
 
-      // 2. Fetch Profiles
-      const { count: userCount, error: userErr } = await supabase.from('profiles').select('*', { count: 'exact', head: true });
-      if (userErr) throw userErr;
+      if (ordersRes.error) throw ordersRes.error;
 
-      // 3. Fetch Products
-      const { count: productCount, error: prodErr } = await supabase.from('products').select('*', { count: 'exact', head: true });
-      if (prodErr) throw prodErr;
-
-      // 4. Fetch Recent Orders
-      const { data: recent, error: recentErr } = await supabase
-        .from('orders')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(5);
-      if (recentErr) throw recentErr;
+      const totalRevenue = ordersRes.data?.reduce((acc, curr) => acc + (Number(curr.total) || 0), 0) || 0;
+      const totalOrders = ordersRes.data?.length || 0;
 
       setStats({
         revenue: totalRevenue,
         orders: totalOrders,
-        users: userCount || 0,
-        inventory: productCount || 0
+        users: usersRes.count || 0,
+        inventory: prodsRes.count || 0
       });
 
-      if (recent) setRecentOrders(recent);
+      if (recentRes.data) setRecentOrders(recentRes.data);
       
-      // Auto-fetch insights based on real data
-      if (totalOrders > 0 || productCount > 0) {
-        const summary = `Revenue: $${totalRevenue.toFixed(2)}, Total Orders: ${totalOrders}, Users: ${userCount}, Inventory: ${productCount}.`;
+      if (totalOrders > 0 || prodsRes.count! > 0) {
+        const summary = `Revenue: $${totalRevenue.toFixed(2)}, Total Orders: ${totalOrders}, Users: ${usersRes.count}, Inventory: ${prodsRes.count}.`;
         setLoadingInsights(true);
         const aiResponse = await getStoreInsights(summary);
         setInsights(aiResponse || "No enough data for AI deep-dive yet.");
         setLoadingInsights(false);
       }
-    } catch (error) {
-      console.error("Dashboard fetch error:", error);
+    } catch (err: any) {
+      console.error("Dashboard fetch error:", err);
+      setError("Unable to load real-time metrics. Please check your database connection.");
     } finally {
       setLoading(false);
     }
@@ -110,13 +105,22 @@ const Dashboard = () => {
           </button>
           <button 
             onClick={fetchDashboardData}
-            className="flex items-center space-x-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2.5 rounded-xl font-medium transition-all duration-300 shadow-lg shadow-indigo-600/20"
+            disabled={loading}
+            className="flex items-center space-x-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2.5 rounded-xl font-medium transition-all duration-300 shadow-lg shadow-indigo-600/20 disabled:opacity-50"
           >
             <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
             <span>Sync Live Data</span>
           </button>
         </div>
       </div>
+
+      {error && (
+        <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-sm flex items-center space-x-3">
+          <AlertCircle size={18} />
+          <span>{error}</span>
+          <button onClick={fetchDashboardData} className="underline font-bold ml-auto">Retry</button>
+        </div>
+      )}
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -139,7 +143,12 @@ const Dashboard = () => {
               </h3>
               <button className="text-sm font-medium text-indigo-400 hover:text-indigo-300">View All</button>
             </div>
-            {recentOrders.length > 0 ? (
+            {loading ? (
+              <div className="flex flex-col items-center justify-center py-10">
+                <Loader2 className="animate-spin text-slate-600 mb-2" size={24} />
+                <p className="text-xs text-slate-500">Fetching records...</p>
+              </div>
+            ) : recentOrders.length > 0 ? (
               <div className="overflow-x-auto">
                 <table className="w-full text-left">
                   <thead className="text-xs uppercase text-slate-500 tracking-wider">

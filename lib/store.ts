@@ -1,13 +1,14 @@
 
 import { create } from 'zustand';
 import { Profile } from '../types';
-import { supabase, isSupabaseConfigured } from './supabase';
+import { supabase, isSupabaseConfigured, withTimeout } from './supabase';
 import { mockUsers } from './mockData';
 
 interface AuthState {
   user: Profile | null;
   isAuthenticated: boolean;
   setAuth: (user: Profile | null) => void;
+  updateProfile: (updates: Partial<Profile>) => Promise<{ error: any }>;
   login: (email: string, password: string) => Promise<{ error: any }>;
   signUp: (email: string, password: string, name: string) => Promise<{ error: any }>;
   logout: () => Promise<void>;
@@ -19,24 +20,49 @@ interface UIState {
   isDrawerOpen: boolean;
   drawerType: 'add' | 'edit' | null;
   drawerData: any | null;
+  refreshTrigger: number;
   openDrawer: (type: 'add' | 'edit', data?: any) => void;
   closeDrawer: () => void;
+  triggerRefresh: () => void;
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   isAuthenticated: false,
   setAuth: (user) => set({ user, isAuthenticated: !!user }),
   
+  updateProfile: async (updates) => {
+    const currentUser = get().user;
+    if (!currentUser) return { error: { message: "No active user session" } };
+
+    try {
+      if (isSupabaseConfigured()) {
+        const { error } = await supabase
+          .from('profiles')
+          .update(updates)
+          .eq('id', currentUser.id);
+        
+        if (error) throw error;
+      }
+      
+      // Update local state
+      set({ user: { ...currentUser, ...updates } });
+      return { error: null };
+    } catch (err: any) {
+      console.error("Profile update error:", err);
+      return { error: err };
+    }
+  },
+
   signUp: async (email, password, name) => {
     try {
-      const { data, error } = await supabase.auth.signUp({
+      const { data, error } = await withTimeout(supabase.auth.signUp({
         email,
         password,
         options: {
-          data: { name } // Pass name to raw_user_meta_data for the SQL trigger
+          data: { name }
         }
-      });
+      })) as any;
       
       if (error) return { error };
       return { error: null };
@@ -53,58 +79,58 @@ export const useAuthStore = create<AuthState>((set) => ({
         return { error: null };
       }
 
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) return { error };
-
-      if (!data.user) return { error: { message: "User not found after login" } };
-
-      // Wait a tiny bit for the SQL trigger to finish if this is a first-time login
-      let profile = null;
-      let profileError = null;
+      console.log("Attempting login for:", email);
+      const { data, error } = await withTimeout(supabase.auth.signInWithPassword({ email, password }), 8000) as any;
       
-      const fetchProfile = async () => {
-        const { data: p, error: e } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', data.user!.id)
-          .single();
-        return { p, e };
-      };
+      if (error) {
+        console.error("Supabase Auth Error:", error.message, error.status);
+        return { error: { message: error.message || "Login failed. Check credentials or project status." } };
+      }
 
-      const result = await fetchProfile();
-      profile = result.p;
-      profileError = result.e;
+      if (!data.user) return { error: { message: "User session could not be established." } };
 
-      if (profileError || !profile) {
-        console.warn("Profile fetch failed, using auth metadata fallback:", profileError);
+      try {
+        const { data: profile, error: profileError } = await withTimeout(
+          supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', data.user.id)
+            .single(),
+          4000
+        ) as any;
+
+        if (profileError || !profile) {
+          console.warn("Profile fetch failed, defaulting to session metadata");
+          throw new Error("No profile found");
+        }
+
+        set({
+          isAuthenticated: true,
+          user: {
+            id: profile.id,
+            name: profile.name || 'Admin User',
+            email: profile.email,
+            role: profile.role || 'user',
+            avatar_url: profile.avatar_url || `https://i.pravatar.cc/150?u=${profile.id}`
+          }
+        });
+      } catch (pErr) {
         set({
           isAuthenticated: true,
           user: {
             id: data.user.id,
             name: data.user.user_metadata?.name || data.user.email?.split('@')[0] || 'User',
             email: data.user.email || '',
-            role: 'user', // Default to user if profile not found
+            role: 'user',
             avatar_url: `https://i.pravatar.cc/150?u=${data.user.id}`
           }
         });
-        return { error: null };
       }
-
-      set({
-        isAuthenticated: true,
-        user: {
-          id: profile.id,
-          name: profile.name || 'Admin User',
-          email: profile.email,
-          role: profile.role || 'user',
-          avatar_url: profile.avatar_url || `https://i.pravatar.cc/150?u=${profile.id}`
-        }
-      });
       
       return { error: null };
     } catch (err: any) {
-      console.error("Login catch error:", err);
-      return { error: { message: err.message || "An unexpected error occurred during login." } };
+      console.error("Login critical catch:", err);
+      return { error: { message: err.message || "Connection timed out. The database might be offline." } };
     }
   },
   
@@ -127,6 +153,8 @@ export const useUIStore = create<UIState>((set) => ({
   isDrawerOpen: false,
   drawerType: null,
   drawerData: null,
+  refreshTrigger: 0,
   openDrawer: (type, data = null) => set({ isDrawerOpen: true, drawerType: type, drawerData: data }),
   closeDrawer: () => set({ isDrawerOpen: false, drawerType: null, drawerData: null }),
+  triggerRefresh: () => set((state) => ({ refreshTrigger: state.refreshTrigger + 1 })),
 }));

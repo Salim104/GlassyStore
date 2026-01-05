@@ -1,9 +1,9 @@
 
 import React, { useState, useEffect } from 'react';
-import { Plus, Search, Filter, MoreHorizontal, Edit, Trash2, Loader2, PackageOpen } from 'lucide-react';
+import { Plus, Search, Filter, MoreHorizontal, Edit, Trash2, Loader2, PackageOpen, RefreshCw } from 'lucide-react';
 import { useUIStore } from '../lib/store';
 import { Product, Category } from '../types';
-import { supabase } from '../lib/supabase';
+import { supabase, withTimeout } from '../lib/supabase';
 import { mockCategories } from '../lib/mockData';
 
 const Products = () => {
@@ -11,33 +11,41 @@ const Products = () => {
   const [categories, setCategories] = useState<Category[]>(mockCategories);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const { openDrawer } = useUIStore();
+  const { openDrawer, refreshTrigger } = useUIStore();
 
   const fetchData = async () => {
     setLoading(true);
     try {
-      // Fetch Products
-      const { data: productsData, error: prodErr } = await supabase
-        .from('products')
-        .select('*')
-        .order('created_at', { ascending: false });
+      // Fetch Products with timeout
+      const { data: productsData, error: prodErr } = await withTimeout(
+        supabase
+          .from('products')
+          .select('*')
+          .order('created_at', { ascending: false }),
+        6000
+      ) as any;
+      
       if (prodErr) throw prodErr;
       
-      // Fetch Categories
-      const { data: catData } = await supabase.from('categories').select('*');
+      // Fetch Categories with timeout
+      const { data: catData } = await withTimeout(
+        supabase.from('categories').select('*'),
+        4000
+      ) as any;
       
       setProducts(productsData || []);
       if (catData && catData.length > 0) setCategories(catData);
     } catch (err: any) {
-      console.error("Fetch error:", err.message);
+      console.error("Fetch products error:", err.message);
     } finally {
       setLoading(false);
     }
   };
 
+  // Initial fetch and listen for triggers
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [refreshTrigger]);
 
   const deleteProduct = async (id: string) => {
     if (!confirm("Are you sure you want to delete this product?")) return;
@@ -48,7 +56,7 @@ const Products = () => {
       setProducts(prev => prev.filter(p => p.id !== id));
     } catch (err) {
       console.error("Delete failed:", err);
-      alert("Failed to delete product from database.");
+      alert("Failed to delete product from database. Check your permissions.");
     }
   };
 
@@ -64,13 +72,22 @@ const Products = () => {
           <h2 className="text-3xl font-bold text-white tracking-tight">Products</h2>
           <p className="text-slate-400 mt-1">Manage your live inventory and product catalogue.</p>
         </div>
-        <button 
-          onClick={() => openDrawer('add')}
-          className="flex items-center justify-center space-x-2 bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-3 rounded-xl font-semibold transition-all duration-300 shadow-lg shadow-indigo-600/20"
-        >
-          <Plus size={20} />
-          <span>Add Product</span>
-        </button>
+        <div className="flex items-center space-x-3">
+          <button 
+            onClick={fetchData}
+            className="p-3 bg-white/5 hover:bg-white/10 text-slate-400 rounded-xl transition-all"
+            title="Refresh List"
+          >
+            <RefreshCw size={20} className={loading ? 'animate-spin text-indigo-400' : ''} />
+          </button>
+          <button 
+            onClick={() => openDrawer('add')}
+            className="flex items-center justify-center space-x-2 bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-3 rounded-xl font-semibold transition-all duration-300 shadow-lg shadow-indigo-600/20"
+          >
+            <Plus size={20} />
+            <span>Add Product</span>
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-col md:flex-row items-center gap-4">
@@ -91,7 +108,7 @@ const Products = () => {
       </div>
 
       <div className="glass-panel rounded-2xl overflow-hidden min-h-[400px]">
-        {loading ? (
+        {loading && products.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20">
             <Loader2 className="animate-spin text-indigo-500 mb-4" size={40} />
             <p className="text-slate-400 font-medium">Querying database...</p>
@@ -148,7 +165,7 @@ const Products = () => {
                         </button>
                         <button 
                           onClick={() => deleteProduct(product.id)}
-                          className="p-2 text-slate-400 hover:text-rose-400 hover:bg-rose-400/10 rounded-lg transition-all"
+                          className="p-2 text-slate-500 hover:text-rose-400 hover:bg-rose-400/10 rounded-lg transition-all"
                         >
                           <Trash2 size={18} />
                         </button>

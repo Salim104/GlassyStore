@@ -1,14 +1,14 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Save, Sparkles, Loader2, Upload, Image as ImageIcon, Trash2 } from 'lucide-react';
+import { X, Save, Sparkles, Loader2, Upload, Image as ImageIcon, Trash2, AlertCircle } from 'lucide-react';
 import { useUIStore } from '../lib/store';
 import { generateProductDescription } from '../lib/geminiService';
 import { mockCategories } from '../lib/mockData';
-import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { supabase, isSupabaseConfigured, withTimeout } from '../lib/supabase';
 import { Category } from '../types';
 
 export const ProductDrawer = () => {
-  const { isDrawerOpen, closeDrawer, drawerType, drawerData } = useUIStore();
+  const { isDrawerOpen, closeDrawer, drawerType, drawerData, triggerRefresh } = useUIStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
   
   const [categories, setCategories] = useState<Category[]>(mockCategories);
@@ -26,18 +26,24 @@ export const ProductDrawer = () => {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchCategories = async () => {
       if (isSupabaseConfigured()) {
-        const { data } = await supabase.from('categories').select('*');
-        if (data && data.length > 0) setCategories(data);
+        try {
+          const { data } = await withTimeout(supabase.from('categories').select('*'), 3000) as any;
+          if (data && data.length > 0) setCategories(data);
+        } catch (err) {
+          console.warn("Failed to load categories from DB");
+        }
       }
     };
     fetchCategories();
   }, []);
 
   useEffect(() => {
+    setError(null);
     if (drawerType === 'edit' && drawerData) {
       setFormData({
         name: drawerData.name,
@@ -62,7 +68,7 @@ export const ProductDrawer = () => {
       setPreviewUrl(null);
       setSelectedFile(null);
     }
-  }, [drawerType, drawerData]);
+  }, [drawerType, drawerData, isDrawerOpen]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -109,6 +115,7 @@ export const ProductDrawer = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSaving(true);
+    setError(null);
     
     try {
       let finalImageUrl = formData.image_url;
@@ -116,8 +123,9 @@ export const ProductDrawer = () => {
       if (selectedFile && isSupabaseConfigured()) {
         try {
           finalImageUrl = await uploadImage(selectedFile);
-        } catch (err) {
+        } catch (err: any) {
           console.error("Storage upload failed", err);
+          throw new Error("Image upload failed: " + err.message);
         }
       }
 
@@ -132,21 +140,29 @@ export const ProductDrawer = () => {
       };
 
       if (isSupabaseConfigured()) {
-        const { error } = drawerType === 'edit' && drawerData?.id
-          ? await supabase.from('products').update(payload).eq('id', drawerData.id)
-          : await supabase.from('products').insert([payload]);
+        let dbError: any = null;
+        if (drawerType === 'edit') {
+          if (!drawerData?.id) throw new Error("Missing product ID for update.");
+          const res = await withTimeout(supabase.from('products').update(payload).eq('id', drawerData.id), 8000) as any;
+          dbError = res.error;
+        } else {
+          const res = await withTimeout(supabase.from('products').insert([payload]), 8000) as any;
+          dbError = res.error;
+        }
         
-        if (error) throw error;
+        if (dbError) {
+          console.error("Database error during save:", dbError);
+          throw new Error(`Database Error: ${dbError.message || 'Unknown error'}`);
+        }
       } else {
         console.log("Mock Submit:", payload);
       }
       
+      triggerRefresh();
       closeDrawer();
-      // Optional: Refresh parent list via a callback or event bus if needed
-      window.location.reload(); 
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error saving product:", error);
-      alert("Failed to save product to Supabase. Check RLS policies.");
+      setError(error.message || "Failed to save product to database.");
     } finally {
       setIsSaving(false);
     }
@@ -174,6 +190,13 @@ export const ProductDrawer = () => {
             </div>
 
             <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-6">
+              {error && (
+                <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-sm flex items-start space-x-3">
+                  <AlertCircle size={18} className="flex-shrink-0 mt-0.5" />
+                  <span className="flex-1">{error}</span>
+                </div>
+              )}
+
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-slate-300 mb-1.5">Product Image</label>
